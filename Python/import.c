@@ -14,6 +14,7 @@
 #include "eval.h"
 #include "osdefs.h"
 #include "importdl.h"
+#include "cela.h"
 
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
@@ -765,6 +766,7 @@ check_compiled_module(char *pathname, time_t mtime, char *cpathname)
     FILE *fp;
     long magic;
     long pyc_mtime;
+    long pyc_usec;
     fp = fopen(cpathname, "rb");
     if (fp == NULL)
         return NULL;
@@ -772,6 +774,7 @@ check_compiled_module(char *pathname, time_t mtime, char *cpathname)
     if (magic != pyc_magic) {
         if (Py_VerboseFlag)
             PySys_WriteStderr("# %s has bad magic\n", cpathname);
+        fprintf(stderr,"check: bad magic\n");
         fclose(fp);
         return NULL;
     }
@@ -779,14 +782,19 @@ check_compiled_module(char *pathname, time_t mtime, char *cpathname)
     if (pyc_mtime != mtime) {
         if (Py_VerboseFlag)
             PySys_WriteStderr("# %s has bad mtime\n", cpathname);
+        fprintf(stderr,"check: mtime no match\n");
         fclose(fp);
         return NULL;
     }
+    pyc_usec = PyMarshal_ReadLongFromFile(fp);
     if (Py_VerboseFlag)
         PySys_WriteStderr("# %s matches %s\n", cpathname, pathname);
-    RFILE *rfp;
-    rfp->fp=fp;
-    return rfp;
+    static RFILE rfpc = {0};
+    rfpc.fp=fp;
+    rfpc.mtime=pyc_mtime;
+    rfpc.magic=pyc_magic;
+    rfpc.usec=pyc_usec;
+    return (RFILE *)&rfpc;
 }
 
 
@@ -824,9 +832,12 @@ load_compiled_module(char *name, char *cpathname, FILE *fp)
                      "Bad magic number in %.200s", cpathname);
         return NULL;
     }
-    (void) PyMarshal_ReadLongFromFile(fp);
+    long pyc_mtime=PyMarshal_ReadLongFromFile(fp);
+    long pyc_usec =PyMarshal_ReadLongFromFile(fp);
     RFILE rfp;
     rfp.magic=magic;
+    rfp.mtime=pyc_mtime;
+    rfp.usec=pyc_usec;
     rfp.fp=fp;
     co = read_compiled_module(cpathname, &rfp);
     if (co == NULL)
@@ -836,7 +847,6 @@ load_compiled_module(char *name, char *cpathname, FILE *fp)
             name, cpathname);
     m = PyImport_ExecCodeModuleEx(name, (PyObject *)co, cpathname);
     Py_DECREF(co);
-
     return m;
 }
 
@@ -929,6 +939,11 @@ write_compiled_module(PyCodeObject *co, char *cpathname, struct stat *srcstat, t
     PyMarshal_WriteLongToFile(pyc_magic, fp, Py_MARSHAL_VERSION);
     /* First write a 0 for mtime */
     PyMarshal_WriteLongToFile(0L, fp, Py_MARSHAL_VERSION);
+
+    /* Write Current Milliseconds to Use as a Seed */
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    PyMarshal_WriteLongToFile(now.tv_usec, fp, Py_MARSHAL_VERSION);
     PyMarshal_WriteObjectToFile((PyObject *)co, fp, Py_MARSHAL_VERSION);
     if (fflush(fp) != 0 || ferror(fp)) {
         if (Py_VerboseFlag)
@@ -1067,8 +1082,8 @@ load_source_module(char *name, char *pathname, FILE *fp)
     cpathname = make_compiled_pathname(pathname, buf,
                                        (size_t)MAXPATHLEN + 1);
     RFILE *rfpc;
-    if (cpathname != NULL &&
-        (rfpc = check_compiled_module(pathname, mtime, cpathname))) {
+    if (cpathname != NULL && (rfpc = check_compiled_module(pathname, mtime, cpathname)) ) {
+        fprintf(stderr,"using existing compiled [%s]\n",cpathname);
         co = read_compiled_module(cpathname, rfpc);
         fclose(rfpc->fp);
         if (co == NULL)
@@ -1082,6 +1097,7 @@ load_source_module(char *name, char *pathname, FILE *fp)
     }
     else {
         co = parse_source_module(pathname, fp);
+        fprintf(stderr,"can't use existing compiled [%s]\n",pathname);
         if (co == NULL)
             goto error_exit;
         if (Py_VerboseFlag)
@@ -1092,8 +1108,10 @@ load_source_module(char *name, char *pathname, FILE *fp)
             int b = (ro == NULL) ? 0 : PyObject_IsTrue(ro);
             if (b < 0)
                 goto error_exit;
-            if (!b)
+            if (!b) {
+                fprintf(stderr,"compiling [%s]\n",cpathname);
                 write_compiled_module(co, cpathname, &st, mtime);
+            }
         }
     }
     m = PyImport_ExecCodeModuleEx(name, (PyObject *)co, pathname);

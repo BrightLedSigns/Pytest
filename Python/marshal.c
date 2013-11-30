@@ -10,6 +10,7 @@
 #include "longintrepr.h"
 #include "code.h"
 #include "marshal.h"
+#include "cela.h"
 
 #define ABS(x) ((x) < 0 ? -(x) : (x))
 

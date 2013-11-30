@@ -14,7 +14,7 @@ typedef struct {
     int depth;
     long magic;
     long mtime;
-    long mtimemsec;
+    long usec;
     /* If fp == NULL, the following are valid: */
     PyObject *str;
     char *ptr;
